@@ -54,6 +54,7 @@ async function runMigrations() {
       jenis_kelamin VARCHAR(20) DEFAULT '',
       tingkat_aktivitas VARCHAR(50) DEFAULT '',
       target_kalori_harian FLOAT DEFAULT 0,
+      foto_profil TEXT DEFAULT '',
       FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
     )`,
     `CREATE TABLE IF NOT EXISTS foods (
@@ -190,16 +191,33 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // =========================================================
-// 3. UPDATE PROFIL USER
+// 3. GET PROFIL USER
+// =========================================================
+app.get('/api/user/profile/:id_user', async (req, res) => {
+  const { id_user } = req.params;
+  try {
+    const [profiles] = await pool.query('SELECT * FROM end_user_profiles WHERE id_user = ?', [id_user]);
+    if (profiles.length === 0) {
+      return res.status(404).json({ success: false, message: 'Profil tidak ditemukan' });
+    }
+    res.json({ success: true, profile: profiles[0] });
+  } catch (error) {
+    console.error("Error Get Profile:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// =========================================================
+// 4. UPDATE PROFIL USER
 // =========================================================
 app.put('/api/user/profile/:id_user', async (req, res) => {
   const { id_user } = req.params;
-  const { nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian } = req.body;
+  const { nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil } = req.body;
 
   try {
     await pool.query(
-      'UPDATE end_user_profiles SET nama=?, berat_badan=?, tinggi_badan=?, usia=?, jenis_kelamin=?, tingkat_aktivitas=?, target_kalori_harian=? WHERE id_user=?',
-      [nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, id_user]
+      'UPDATE end_user_profiles SET nama=?, berat_badan=?, tinggi_badan=?, usia=?, jenis_kelamin=?, tingkat_aktivitas=?, target_kalori_harian=?, foto_profil=? WHERE id_user=?',
+      [nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil || '', id_user]
     );
     res.json({ success: true, message: 'Profil berhasil diperbarui' });
   } catch (error) {
@@ -209,7 +227,26 @@ app.put('/api/user/profile/:id_user', async (req, res) => {
 });
 
 // =========================================================
-// 4. JALANKAN SERVER
+// 5. HAPUS AKUN USER
+// =========================================================
+app.delete('/api/user/:id_user', async (req, res) => {
+  const { id_user } = req.params;
+
+  try {
+    // ON DELETE CASCADE di FK akan otomatis menghapus profil, history, dan bookmark
+    const [result] = await pool.query('DELETE FROM users WHERE id_user = ?', [id_user]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+    }
+    res.json({ success: true, message: 'Akun berhasil dihapus' });
+  } catch (error) {
+    console.error("Error Delete User:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// =========================================================
+// 6. JALANKAN SERVER
 // =========================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
