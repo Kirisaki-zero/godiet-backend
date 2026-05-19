@@ -250,6 +250,147 @@ app.delete('/api/user/:id_user', async (req, res) => {
 });
 
 // =========================================================
+// ADMIN MIDDLEWARE — verifikasi role admin dari DB
+// =========================================================
+async function adminOnly(req, res, next) {
+  const adminId = req.headers['x-admin-id'];
+  if (!adminId) {
+    return res.status(401).json({ success: false, message: 'Akses ditolak: Header X-Admin-Id wajib ada.' });
+  }
+  try {
+    const [rows] = await pool.query('SELECT role FROM users WHERE id_user = ?', [adminId]);
+    if (rows.length === 0 || rows[0].role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Akses ditolak: Bukan admin.' });
+    }
+    next();
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Gagal memverifikasi admin.' });
+  }
+}
+
+// =========================================================
+// ADMIN 1. STATISTIK DASBOR
+// =========================================================
+app.get('/api/admin/stats', adminOnly, async (req, res) => {
+  try {
+    const [[{ totalUsers }]] = await pool.query('SELECT COUNT(*) AS totalUsers FROM users WHERE role = "enduser"');
+    const [[{ totalFoods }]] = await pool.query('SELECT COUNT(*) AS totalFoods FROM foods');
+    res.json({ success: true, totalUsers, totalFoods });
+  } catch (error) {
+    console.error("Error Admin Stats:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 2. LIHAT SEMUA USER
+// =========================================================
+app.get('/api/admin/users', adminOnly, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT u.id_user, u.email, u.role, p.nama, p.berat_badan, p.tinggi_badan, p.usia, p.jenis_kelamin, p.tingkat_aktivitas
+      FROM users u
+      LEFT JOIN end_user_profiles p ON u.id_user = p.id_user
+      WHERE u.role = 'enduser'
+      ORDER BY u.email ASC
+    `);
+    res.json({ success: true, users: rows });
+  } catch (error) {
+    console.error("Error Admin Get Users:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 3. HAPUS USER
+// =========================================================
+app.delete('/api/admin/users/:id_user', adminOnly, async (req, res) => {
+  const { id_user } = req.params;
+  try {
+    const [result] = await pool.query('DELETE FROM users WHERE id_user = ?', [id_user]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+    }
+    res.json({ success: true, message: 'User berhasil dihapus' });
+  } catch (error) {
+    console.error("Error Admin Delete User:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 4. LIHAT SEMUA MAKANAN
+// =========================================================
+app.get('/api/admin/foods', adminOnly, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM foods ORDER BY nama_makanan ASC');
+    res.json({ success: true, foods: rows });
+  } catch (error) {
+    console.error("Error Admin Get Foods:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 5. TAMBAH MAKANAN BARU
+// =========================================================
+app.post('/api/admin/foods', adminOnly, async (req, res) => {
+  const { nama_makanan, kalori, protein, lemak, karbohidrat, resep, kategori } = req.body;
+  if (!nama_makanan) {
+    return res.status(400).json({ success: false, message: 'Nama makanan wajib diisi!' });
+  }
+  const id_makanan = uuidv4();
+  try {
+    await pool.query(
+      'INSERT INTO foods (id_makanan, nama_makanan, kalori, protein, lemak, karbohidrat, resep, kategori) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id_makanan, nama_makanan, kalori || 0, protein || 0, lemak || 0, karbohidrat || 0, resep || '', kategori || '']
+    );
+    res.status(201).json({ success: true, message: 'Makanan berhasil ditambahkan', id_makanan });
+  } catch (error) {
+    console.error("Error Admin Add Food:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 6. UPDATE MAKANAN
+// =========================================================
+app.put('/api/admin/foods/:id_makanan', adminOnly, async (req, res) => {
+  const { id_makanan } = req.params;
+  const { nama_makanan, kalori, protein, lemak, karbohidrat, resep, kategori } = req.body;
+  try {
+    const [result] = await pool.query(
+      'UPDATE foods SET nama_makanan=?, kalori=?, protein=?, lemak=?, karbohidrat=?, resep=?, kategori=? WHERE id_makanan=?',
+      [nama_makanan, kalori || 0, protein || 0, lemak || 0, karbohidrat || 0, resep || '', kategori || '', id_makanan]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Makanan tidak ditemukan' });
+    }
+    res.json({ success: true, message: 'Makanan berhasil diperbarui' });
+  } catch (error) {
+    console.error("Error Admin Update Food:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 7. HAPUS MAKANAN
+// =========================================================
+app.delete('/api/admin/foods/:id_makanan', adminOnly, async (req, res) => {
+  const { id_makanan } = req.params;
+  try {
+    const [result] = await pool.query('DELETE FROM foods WHERE id_makanan = ?', [id_makanan]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Makanan tidak ditemukan' });
+    }
+    res.json({ success: true, message: 'Makanan berhasil dihapus' });
+  } catch (error) {
+    console.error("Error Admin Delete Food:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
 // 6. JALANKAN SERVER
 // =========================================================
 const PORT = process.env.PORT || 3000;
