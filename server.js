@@ -97,6 +97,17 @@ async function runMigrations() {
       FOREIGN KEY (id_bookmark) REFERENCES bookmarks(id_bookmark) ON DELETE CASCADE,
       FOREIGN KEY (id_makanan) REFERENCES foods(id_makanan) ON DELETE CASCADE
     )`,
+    `CREATE TABLE IF NOT EXISTS reports (
+      id_report VARCHAR(50) PRIMARY KEY,
+      id_user VARCHAR(50),
+      username VARCHAR(100),
+      judul VARCHAR(200),
+      isi_laporan TEXT,
+      kategori VARCHAR(50) DEFAULT 'Umum',
+      status ENUM('pending', 'resolved', 'rejected') DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
+    )`,
   ];
 
   for (const query of queries) {
@@ -387,6 +398,88 @@ app.delete('/api/admin/foods/:id_makanan', adminOnly, async (req, res) => {
   } catch (error) {
     console.error("Error Admin Delete Food:", error);
     res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 8. LIHAT SEMUA LAPORAN
+// =========================================================
+app.get('/api/admin/reports', adminOnly, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM reports ORDER BY created_at DESC');
+    res.json(rows);
+  } catch (error) {
+    console.error("Error Admin Get Reports:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 9. HAPUS LAPORAN
+// =========================================================
+app.delete('/api/admin/reports/:id_report', adminOnly, async (req, res) => {
+  const { id_report } = req.params;
+  try {
+    const [result] = await pool.query('DELETE FROM reports WHERE id_report = ?', [id_report]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Laporan tidak ditemukan' });
+    }
+    res.json({ success: true, message: 'Laporan berhasil dihapus' });
+  } catch (error) {
+    console.error("Error Admin Delete Report:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// ADMIN 10. UPDATE STATUS LAPORAN
+// =========================================================
+app.put('/api/admin/reports/:id_report/status', adminOnly, async (req, res) => {
+  const { id_report } = req.params;
+  const { status } = req.body;
+
+  const validStatuses = ['pending', 'resolved', 'rejected'];
+  if (!status || !validStatuses.includes(status)) {
+    return res.status(400).json({ success: false, message: 'Status tidak valid. Gunakan: pending, resolved, atau rejected' });
+  }
+
+  try {
+    const [result] = await pool.query('UPDATE reports SET status = ? WHERE id_report = ?', [status, id_report]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Laporan tidak ditemukan' });
+    }
+    res.json({ success: true, message: `Status laporan berhasil diubah ke ${status}` });
+  } catch (error) {
+    console.error("Error Admin Update Report Status:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+// =========================================================
+// USER: KIRIM LAPORAN BARU
+// =========================================================
+app.post('/api/user/reports', async (req, res) => {
+  const { id_user, judul, isi_laporan, kategori } = req.body;
+
+  if (!id_user || !judul || !isi_laporan) {
+    return res.status(400).json({ success: false, message: 'id_user, judul, dan isi_laporan wajib diisi!' });
+  }
+
+  try {
+    // Ambil username dari profil user
+    const [profiles] = await pool.query('SELECT nama FROM end_user_profiles WHERE id_user = ?', [id_user]);
+    const username = profiles.length > 0 ? profiles[0].nama : 'Unknown';
+
+    const id_report = uuidv4();
+    await pool.query(
+      'INSERT INTO reports (id_report, id_user, username, judul, isi_laporan, kategori) VALUES (?, ?, ?, ?, ?, ?)',
+      [id_report, id_user, username, judul, isi_laporan, kategori || 'Umum']
+    );
+
+    res.status(201).json({ success: true, message: 'Laporan berhasil dikirim', id_report });
+  } catch (error) {
+    console.error("Error Create Report:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
   }
 });
 
