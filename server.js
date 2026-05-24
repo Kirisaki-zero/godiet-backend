@@ -259,7 +259,18 @@ app.put('/api/user/profile/:id_user', async (req, res) => {
   try {
     await pool.query(
       'UPDATE end_user_profiles SET nama=?, berat_badan=?, tinggi_badan=?, usia=?, jenis_kelamin=?, tingkat_aktivitas=?, target_kalori_harian=?, foto_profil=?, tujuan=? WHERE id_user=?',
-      [nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil || '', tujuan || '', id_user]
+      [
+        nama !== undefined ? nama : null,
+        berat_badan !== undefined ? berat_badan : 0,
+        tinggi_badan !== undefined ? tinggi_badan : 0,
+        usia !== undefined ? usia : 0,
+        jenis_kelamin !== undefined ? jenis_kelamin : '',
+        tingkat_aktivitas !== undefined ? tingkat_aktivitas : '',
+        target_kalori_harian !== undefined ? target_kalori_harian : 0,
+        foto_profil !== undefined ? (foto_profil || '') : '',
+        tujuan !== undefined ? (tujuan || '') : '',
+        id_user
+      ]
     );
     res.json({ success: true, message: 'Profil berhasil diperbarui' });
   } catch (error) {
