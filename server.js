@@ -483,6 +483,143 @@ app.get('/api/admin/users', adminOnly, async (req, res) => {
 });
 
 // =========================================================
+// ADMIN: DATA KEBUGARAN LENGKAP
+// =========================================================
+app.get('/api/admin/fitness', adminOnly, async (req, res) => {
+  try {
+    // 1. Total enduser
+    const [[{ totalUsers }]] = await pool.query('SELECT COUNT(*) AS totalUsers FROM users WHERE role = "enduser"');
+
+    // 2. Sesi workout per hari (7 hari terakhir) — untuk bar chart
+    const [weeklyRows] = await pool.query(`
+      SELECT DAYNAME(tanggal) AS day_name, COUNT(*) AS sessions
+      FROM workout_histories
+      WHERE tanggal >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+      GROUP BY DAYOFWEEK(tanggal), DAYNAME(tanggal)
+      ORDER BY DAYOFWEEK(tanggal)
+    `);
+    const dayMap = { Monday: 'Sen', Tuesday: 'Sel', Wednesday: 'Rab', Thursday: 'Kam', Friday: 'Jum', Saturday: 'Sab', Sunday: 'Min' };
+    const allDays = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+    const weeklyMap = {};
+    weeklyRows.forEach(r => { weeklyMap[dayMap[r.day_name] || r.day_name] = Number(r.sessions); });
+    const weeklySessionsData = allDays.map(d => ({ name: d, sessions: weeklyMap[d] || 0 }));
+
+    // 3. Compliance trend — 7 minggu terakhir — untuk area chart
+    const [complianceRaw] = await pool.query(`
+      SELECT
+        YEARWEEK(tanggal, 1) AS week_key,
+        COUNT(DISTINCT id_user) AS active_users
+      FROM workout_histories
+      WHERE tanggal >= DATE_SUB(CURDATE(), INTERVAL 7 WEEK)
+      GROUP BY week_key
+      ORDER BY week_key ASC
+      LIMIT 7
+    `);
+    const complianceTrendData = complianceRaw.map((row, idx) => ({
+      name: `W${idx + 1}`,
+      rate: Number(totalUsers) > 0 ? Math.round((Number(row.active_users) / Number(totalUsers)) * 100) : 0,
+    }));
+
+    // 4. Data per-user lengkap untuk tabel
+    const [userRows] = await pool.query(`
+      SELECT
+        u.id_user,
+        u.email,
+        COALESCE(p.nama, u.email) AS nama,
+        COALESCE(p.berat_badan, 0) AS berat_badan,
+        COALESCE(p.tinggi_badan, 0) AS tinggi_badan,
+        COALESCE(p.tujuan, '') AS tujuan,
+        MAX(wh.tanggal) AS last_workout,
+        COALESCE(DATEDIFF(CURDATE(), MAX(wh.tanggal)), 999) AS days_since_workout,
+        COUNT(wh.id_workout) AS total_workouts,
+        COALESCE(SUM(wh.kalori_terbakar), 0) AS total_kalori
+      FROM users u
+      LEFT JOIN end_user_profiles p ON u.id_user = p.id_user
+      LEFT JOIN workout_histories wh ON u.id_user = wh.id_user
+        AND wh.tanggal >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      WHERE u.role = 'enduser'
+      GROUP BY u.id_user, p.nama, p.berat_badan, p.tinggi_badan, p.tujuan
+      ORDER BY days_since_workout ASC
+    `);
+
+    // Map ke format yang dibutuhkan frontend
+    const fitnessUsers = userRows.map((u, i) => {
+      const days = Number(u.days_since_workout);
+      const bb   = Number(u.berat_badan) || 0;
+      const tb   = Number(u.tinggi_badan) || 0;
+      const bmi  = (bb > 0 && tb > 0) ? Math.round((bb / ((tb / 100) ** 2)) * 10) / 10 : null;
+
+      // Compliance: rasio hari aktif workout dalam 30 hari (maks 100%)
+      const workoutDays30 = Number(u.total_workouts) || 0;
+      const compliance = Math.min(Math.round((workoutDays30 / 30) * 100), 100);
+
+      // Status badge
+      let status = 'Off';
+      if (days <= 2)      status = 'OK';
+      else if (days <= 7) status = 'Warn';
+
+      // Label last workout
+      let lastWorkout = 'Belum pernah';
+      if (u.last_workout) {
+        if (days === 0)      lastWorkout = 'Hari ini';
+        else if (days === 1) lastWorkout = 'Kemarin';
+        else                 lastWorkout = `${days} hari lalu`;
+      }
+
+      // Initials
+      const nameParts = (u.nama || '?').split(' ');
+      const initials  = nameParts.map(n => n[0] || '').join('').substring(0, 2).toUpperCase();
+
+      // Program dari tujuan
+      let program = 'Umum';
+      const t = (u.tujuan || '').toLowerCase();
+      if (t.includes('turun') || t.includes('fat') || t.includes('menurunkan')) program = 'Fat Loss';
+      else if (t.includes('otot') || t.includes('muscle') || t.includes('kuat')) program = 'Muscle Gain';
+      else if (t.includes('bugar') || t.includes('tetap') || t.includes('maintenance')) program = 'Maintenance';
+      else if (u.tujuan && u.tujuan.trim() !== '') program = 'Health';
+
+      return {
+        id: `#${i + 1}`,
+        id_user: u.id_user,
+        name: u.nama || u.email,
+        initials,
+        program,
+        bmi,
+        compliance,
+        streak: days < 999 ? days : 0,
+        status,
+        lastWorkout,
+        totalKalori: Math.round(Number(u.total_kalori) || 0),
+      };
+    });
+
+    // 5. Stat cards
+    const countOK   = fitnessUsers.filter(u => u.status === 'OK').length;
+    const countWarn = fitnessUsers.filter(u => u.status === 'Warn').length;
+    const countOff  = fitnessUsers.filter(u => u.status === 'Off').length;
+    const avgCompliance = fitnessUsers.length > 0
+      ? Math.round(fitnessUsers.reduce((s, u) => s + u.compliance, 0) / fitnessUsers.length)
+      : 0;
+
+    res.json({
+      success: true,
+      totalUserFitness: fitnessUsers.length,
+      countOK,
+      countWarn,
+      countOff,
+      avgCompliance,
+      weeklySessionsData,
+      complianceTrendData,
+      fitnessUsers,
+    });
+  } catch (error) {
+    console.error("Error Admin Fitness:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
+  }
+});
+
+
+// =========================================================
 // ADMIN 3. HAPUS USER
 // =========================================================
 app.delete('/api/admin/users/:id_user', adminOnly, async (req, res) => {
