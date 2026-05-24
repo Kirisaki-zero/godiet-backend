@@ -32,6 +32,8 @@ async function initDB() {
     pool = mysql.createPool(dbConfig);
     // Jalankan migrasi: buat tabel jika belum ada
     await runMigrations();
+    // Jalankan migrasi ALTER: tambah kolom baru jika belum ada
+    await runAlterMigrations();
     console.log("✅ Berhasil terkoneksi ke MySQL Database");
   } catch (err) {
     console.error("❌ Gagal terkoneksi ke MySQL:", err.message);
@@ -108,12 +110,37 @@ async function runMigrations() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
     )`,
+    `CREATE TABLE IF NOT EXISTS workout_histories (
+      id_workout VARCHAR(50) PRIMARY KEY,
+      id_user VARCHAR(50) NOT NULL,
+      tanggal DATE NOT NULL,
+      durasi_detik INT DEFAULT 0,
+      kalori_terbakar FLOAT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
+    )`,
   ];
 
   for (const query of queries) {
     await pool.query(query);
   }
   console.log("✅ Migrasi tabel selesai.");
+}
+
+// Tambah kolom baru ke tabel yang sudah ada (aman: error diabaikan jika kolom sudah ada)
+async function runAlterMigrations() {
+  const alterQueries = [
+    `ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE end_user_profiles ADD COLUMN tujuan VARCHAR(200) DEFAULT ''`,
+  ];
+  for (const q of alterQueries) {
+    try {
+      await pool.query(q);
+    } catch (err) {
+      // Kolom sudah ada — abaikan error
+    }
+  }
+  console.log("✅ Migrasi ALTER selesai.");
 }
 
 initDB();
@@ -132,7 +159,7 @@ app.post('/api/auth/register', async (req, res) => {
   const {
     email, password, nama,
     berat_badan, tinggi_badan, usia,
-    jenis_kelamin, tingkat_aktivitas, target_kalori_harian
+    jenis_kelamin, tingkat_aktivitas, target_kalori_harian, tujuan
   } = req.body;
 
   if (!email || !password) {
@@ -154,8 +181,8 @@ app.post('/api/auth/register', async (req, res) => {
     );
 
     await pool.query(
-      'INSERT INTO end_user_profiles (id_user, nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [id_user, nama || '', berat_badan || 0, tinggi_badan || 0, usia || 0, jenis_kelamin || '', tingkat_aktivitas || '', target_kalori_harian || 0]
+      'INSERT INTO end_user_profiles (id_user, nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, tujuan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id_user, nama || '', berat_badan || 0, tinggi_badan || 0, usia || 0, jenis_kelamin || '', tingkat_aktivitas || '', target_kalori_harian || 0, tujuan || '']
     );
 
     res.status(201).json({ success: true, message: 'Registrasi berhasil', id_user });
@@ -227,12 +254,12 @@ app.get('/api/user/profile/:id_user', async (req, res) => {
 // =========================================================
 app.put('/api/user/profile/:id_user', async (req, res) => {
   const { id_user } = req.params;
-  const { nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil } = req.body;
+  const { nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil, tujuan } = req.body;
 
   try {
     await pool.query(
-      'UPDATE end_user_profiles SET nama=?, berat_badan=?, tinggi_badan=?, usia=?, jenis_kelamin=?, tingkat_aktivitas=?, target_kalori_harian=?, foto_profil=? WHERE id_user=?',
-      [nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil || '', id_user]
+      'UPDATE end_user_profiles SET nama=?, berat_badan=?, tinggi_badan=?, usia=?, jenis_kelamin=?, tingkat_aktivitas=?, target_kalori_harian=?, foto_profil=?, tujuan=? WHERE id_user=?',
+      [nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil || '', tujuan || '', id_user]
     );
     res.json({ success: true, message: 'Profil berhasil diperbarui' });
   } catch (error) {
@@ -284,9 +311,152 @@ async function adminOnly(req, res, next) {
 // =========================================================
 app.get('/api/admin/stats', adminOnly, async (req, res) => {
   try {
+    // 1. Total users & foods
     const [[{ totalUsers }]] = await pool.query('SELECT COUNT(*) AS totalUsers FROM users WHERE role = "enduser"');
     const [[{ totalFoods }]] = await pool.query('SELECT COUNT(*) AS totalFoods FROM foods');
-    res.json({ success: true, totalUsers, totalFoods });
+
+    // 2. User baru bulan ini
+    const [[{ newUsersThisMonth }]] = await pool.query(
+      'SELECT COUNT(*) AS newUsersThisMonth FROM users WHERE role = "enduser" AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())'
+    );
+
+    // 3. Rata-rata BMI platform
+    const [[{ avgBmi }]] = await pool.query(
+      'SELECT AVG(berat_badan / (tinggi_badan/100 * tinggi_badan/100)) AS avgBmi FROM end_user_profiles WHERE berat_badan > 0 AND tinggi_badan > 0'
+    );
+
+    // 4. Pertumbuhan user — 7 bulan terakhir
+    const [growthRows] = await pool.query(`
+      SELECT DATE_FORMAT(created_at, '%b') AS name,
+             DATE_FORMAT(created_at, '%Y-%m') AS month_key,
+             COUNT(*) AS users
+      FROM users
+      WHERE role = 'enduser' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 MONTH)
+      GROUP BY month_key, name
+      ORDER BY month_key ASC
+    `);
+
+    // 5. Distribusi program diet
+    const [dietRows] = await pool.query(`
+      SELECT
+        CASE
+          WHEN tujuan LIKE '%turun%' OR tujuan LIKE '%Fat Loss%' OR tujuan LIKE '%Menurunkan%' THEN 'Fat Loss'
+          WHEN tujuan LIKE '%otot%' OR tujuan LIKE '%Muscle%' OR tujuan LIKE '%kuat%' THEN 'Muscle Gain'
+          WHEN tujuan LIKE '%bugar%' OR tujuan LIKE '%Tetap%' OR tujuan LIKE '%Maintenance%' THEN 'Maintenance'
+          ELSE 'Health'
+        END AS name,
+        COUNT(*) AS value
+      FROM end_user_profiles
+      WHERE tujuan IS NOT NULL AND tujuan != ''
+      GROUP BY 1
+    `);
+
+    // 6. Sesi workout per hari (7 hari terakhir)
+    const [weeklyRows] = await pool.query(`
+      SELECT DAYNAME(tanggal) AS day_name, COUNT(*) AS sessions
+      FROM workout_histories
+      WHERE tanggal >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+      GROUP BY DAYOFWEEK(tanggal), DAYNAME(tanggal)
+      ORDER BY DAYOFWEEK(tanggal)
+    `);
+
+    // 7. Workout hari ini
+    const [[{ todayWorkouts }]] = await pool.query(
+      'SELECT COUNT(*) AS todayWorkouts FROM workout_histories WHERE tanggal = CURDATE()'
+    );
+
+    // 8. Total kalori terbakar minggu ini
+    const [[{ weeklyCaloriesBurned }]] = await pool.query(
+      'SELECT COALESCE(SUM(kalori_terbakar), 0) AS weeklyCaloriesBurned FROM workout_histories WHERE tanggal >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)'
+    );
+
+    // 9. Compliance data — 7 minggu terakhir
+    const [complianceRaw] = await pool.query(`
+      SELECT
+        YEARWEEK(tanggal, 1) AS week_key,
+        COUNT(DISTINCT id_user) AS active_users
+      FROM workout_histories
+      WHERE tanggal >= DATE_SUB(CURDATE(), INTERVAL 7 WEEK)
+      GROUP BY week_key
+      ORDER BY week_key ASC
+      LIMIT 7
+    `);
+    const complianceData = complianceRaw.map((row, idx) => ({
+      name: `W${idx + 1}`,
+      rate: Number(totalUsers) > 0 ? Math.round((Number(row.active_users) / Number(totalUsers)) * 100) : 0,
+    }));
+
+    // 10. Pantauan kebugaran user (top 10)
+    const [fitnessRows] = await pool.query(`
+      SELECT u.id_user,
+        COALESCE(p.nama, u.email) AS nama,
+        COALESCE(p.tujuan, '') AS tujuan,
+        MAX(wh.tanggal) AS last_workout,
+        COALESCE(DATEDIFF(CURDATE(), MAX(wh.tanggal)), 999) AS days_since_workout
+      FROM users u
+      LEFT JOIN end_user_profiles p ON u.id_user = p.id_user
+      LEFT JOIN workout_histories wh ON u.id_user = wh.id_user
+      WHERE u.role = 'enduser'
+      GROUP BY u.id_user, p.nama, p.tujuan
+      ORDER BY days_since_workout ASC
+      LIMIT 10
+    `);
+
+    // 11. Laporan pending
+    const [[{ pendingReports }]] = await pool.query(
+      'SELECT COUNT(*) AS pendingReports FROM reports WHERE status = "pending"'
+    );
+
+    // ── Map nama hari ke Bahasa Indonesia ───────────────────────────────
+    const dayMap = { Monday: 'Sen', Tuesday: 'Sel', Wednesday: 'Rab', Thursday: 'Kam', Friday: 'Jum', Saturday: 'Sab', Sunday: 'Min' };
+    const allDays = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+    const weeklyMap = {};
+    weeklyRows.forEach(r => { weeklyMap[dayMap[r.day_name] || r.day_name] = Number(r.sessions); });
+    const weeklyWorkouts = allDays.map(d => ({ name: d, sessions: weeklyMap[d] || 0 }));
+
+    // ── Peta status kebugaran ───────────────────────────────────────────
+    const userFitnessOverview = fitnessRows.map((u, i) => {
+      const days = Number(u.days_since_workout);
+      let status = 'Tidak Aktif';
+      if (days <= 2) status = 'On Track';
+      else if (days <= 7) status = 'Perlu Perhatian';
+      const nameParts = (u.nama || '?').split(' ');
+      const initials = nameParts.map(n => (n[0] || '')).join('').substring(0, 2).toUpperCase();
+      return {
+        id: `#${i + 1}`,
+        id_user: u.id_user,
+        name: u.nama || '-',
+        initials,
+        program: u.tujuan || 'Umum',
+        streak: u.last_workout ? `${days}d` : '-',
+        status,
+      };
+    });
+
+    // ── Notifikasi dinamis ──────────────────────────────────────────────
+    const notifications = [];
+    const inactiveCount = userFitnessOverview.filter(u => u.status === 'Tidak Aktif').length;
+    const onTrackCount  = userFitnessOverview.filter(u => u.status === 'On Track').length;
+    if (inactiveCount > 0)   notifications.push({ type: 'warning', text: `${inactiveCount} user tidak aktif lebih dari 7 hari`, label: 'Peringatan' });
+    if (pendingReports > 0)  notifications.push({ type: 'warning', text: `${pendingReports} laporan menunggu penanganan`, label: 'Peringatan' });
+    if (onTrackCount > 0)    notifications.push({ type: 'success', text: `${onTrackCount} user aktif latihan minggu ini`, label: 'Pencapaian' });
+    if (newUsersThisMonth > 0) notifications.push({ type: 'info', text: `${newUsersThisMonth} user baru bergabung bulan ini`, label: 'Info' });
+
+    res.json({
+      success: true,
+      totalUsers,
+      totalFoods,
+      newUsersThisMonth,
+      avgBmi: avgBmi ? Math.round(Number(avgBmi) * 10) / 10 : 0,
+      userGrowth: growthRows,
+      weeklyWorkouts,
+      dietDistribution: dietRows,
+      complianceData,
+      todayWorkouts,
+      weeklyCaloriesBurned: Math.round(Number(weeklyCaloriesBurned) || 0),
+      userFitnessOverview,
+      notifications,
+    });
   } catch (error) {
     console.error("Error Admin Stats:", error);
     res.status(500).json({ success: false, message: 'Terjadi kesalahan' });
@@ -484,8 +654,32 @@ app.post('/api/user/reports', async (req, res) => {
 });
 
 // =========================================================
+// USER: SYNC RIWAYAT WORKOUT
+// =========================================================
+app.post('/api/user/workout', async (req, res) => {
+  const { id_user, id_workout, tanggal, durasi_detik, kalori_terbakar } = req.body;
+
+  if (!id_user || !tanggal) {
+    return res.status(400).json({ success: false, message: 'id_user dan tanggal wajib diisi!' });
+  }
+
+  try {
+    const id = id_workout || uuidv4();
+    await pool.query(
+      'INSERT IGNORE INTO workout_histories (id_workout, id_user, tanggal, durasi_detik, kalori_terbakar) VALUES (?, ?, ?, ?, ?)',
+      [id, id_user, tanggal, durasi_detik || 0, kalori_terbakar || 0]
+    );
+    res.status(201).json({ success: true, message: 'Riwayat workout berhasil disimpan', id_workout: id });
+  } catch (error) {
+    console.error("Error Sync Workout:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// =========================================================
 // 6. JALANKAN SERVER
 // =========================================================
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 GoDiet API berjalan di port ${PORT}`);
