@@ -58,7 +58,7 @@ async function runMigrations() {
       jenis_kelamin VARCHAR(20) DEFAULT '',
       tingkat_aktivitas VARCHAR(50) DEFAULT '',
       target_kalori_harian FLOAT DEFAULT 0,
-      foto_profil TEXT DEFAULT '',
+      foto_profil TEXT,
       FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
     )`,
     `CREATE TABLE IF NOT EXISTS foods (
