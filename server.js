@@ -119,6 +119,19 @@ async function runMigrations() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
     )`,
+    `CREATE TABLE IF NOT EXISTS food_logs (
+      id_log VARCHAR(50) PRIMARY KEY,
+      id_user VARCHAR(50) NOT NULL,
+      nama_makanan VARCHAR(100) NOT NULL,
+      kalori FLOAT NOT NULL DEFAULT 0,
+      karbohidrat FLOAT NOT NULL DEFAULT 0,
+      protein FLOAT NOT NULL DEFAULT 0,
+      lemak FLOAT NOT NULL DEFAULT 0,
+      kategori_waktu VARCHAR(50) NOT NULL,
+      tanggal DATE NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (id_user) REFERENCES users(id_user) ON DELETE CASCADE
+    )`,
   ];
 
   for (const query of queries) {
@@ -820,6 +833,87 @@ app.post('/api/user/workout', async (req, res) => {
     res.status(201).json({ success: true, message: 'Riwayat workout berhasil disimpan', id_workout: id });
   } catch (error) {
     console.error("Error Sync Workout:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+// =========================================================
+// USER: SIMPAN ASUPAN MAKANAN (MEAL INTAKE)
+// =========================================================
+app.post('/api/meals', async (req, res) => {
+  const { id_user, nama_makanan, kalori, karbohidrat, protein, lemak, kategori_waktu } = req.body;
+
+  if (!id_user || !nama_makanan || !kategori_waktu) {
+    return res.status(400).json({ success: false, message: 'id_user, nama_makanan, dan kategori_waktu wajib diisi!' });
+  }
+
+  try {
+    const id_log = uuidv4();
+    const today = new Date().toISOString().split('T')[0];
+
+    await pool.query(
+      'INSERT INTO food_logs (id_log, id_user, nama_makanan, kalori, karbohidrat, protein, lemak, kategori_waktu, tanggal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        id_log,
+        id_user,
+        nama_makanan,
+        parseFloat(kalori) || 0,
+        parseFloat(karbohidrat) || 0,
+        parseFloat(protein) || 0,
+        parseFloat(lemak) || 0,
+        kategori_waktu,
+        today
+      ]
+    );
+
+    res.status(201).json({ success: true, message: 'Asupan makanan berhasil dicatat', id_log });
+  } catch (error) {
+    console.error("Error Log Meal:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// =========================================================
+// USER: AMBIL RINGKASAN ASUPAN HARI INI
+// =========================================================
+app.get('/api/meals/today', async (req, res) => {
+  const { id_user } = req.query;
+
+  if (!id_user) {
+    return res.status(400).json({ success: false, message: 'id_user wajib disertakan!' });
+  }
+
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    const [summaryRows] = await pool.query(
+      `SELECT 
+         COALESCE(SUM(kalori), 0) as total_kalori,
+         COALESCE(SUM(karbohidrat), 0) as total_karbohidrat,
+         COALESCE(SUM(protein), 0) as total_protein,
+         COALESCE(SUM(lemak), 0) as total_lemak
+       FROM food_logs 
+       WHERE id_user = ? AND tanggal = ?`,
+      [id_user, today]
+    );
+
+    const [mealsRows] = await pool.query(
+      `SELECT id_log, nama_makanan, kalori, karbohidrat, protein, lemak, kategori_waktu, created_at 
+       FROM food_logs 
+       WHERE id_user = ? AND tanggal = ? 
+       ORDER BY created_at ASC`,
+      [id_user, today]
+    );
+
+    res.json({
+      success: true,
+      summary: {
+        total_kalori: Math.round(summaryRows[0].total_kalori),
+        total_karbohidrat: Math.round(summaryRows[0].total_karbohidrat),
+        total_protein: Math.round(summaryRows[0].total_protein),
+        total_lemak: Math.round(summaryRows[0].total_lemak)
+      },
+      meals: mealsRows
+    });
+  } catch (error) {
+    console.error("Error Get Today Meals:", error);
     res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
   }
 });
