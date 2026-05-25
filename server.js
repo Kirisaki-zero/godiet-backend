@@ -834,6 +834,9 @@ app.post('/api/user/workout', async (req, res) => {
   } catch (error) {
     console.error("Error Sync Workout:", error);
     res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
 // =========================================================
 // USER: SIMPAN ASUPAN MAKANAN (MEAL INTAKE)
 // =========================================================
