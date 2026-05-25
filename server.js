@@ -145,6 +145,10 @@ async function runAlterMigrations() {
   const alterQueries = [
     `ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
     `ALTER TABLE end_user_profiles ADD COLUMN tujuan VARCHAR(200) DEFAULT ''`,
+    `ALTER TABLE end_user_profiles MODIFY COLUMN tinggi_badan FLOAT DEFAULT 0`,
+    `ALTER TABLE end_user_profiles MODIFY COLUMN usia INT DEFAULT 0`,
+    `ALTER TABLE end_user_profiles MODIFY COLUMN berat_badan FLOAT DEFAULT 0`,
+    `ALTER TABLE end_user_profiles MODIFY COLUMN foto_profil MEDIUMTEXT`,
   ];
   for (const q of alterQueries) {
     try {
@@ -241,6 +245,55 @@ app.post('/api/auth/login', async (req, res) => {
     });
   } catch (error) {
     console.error("Error Login:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// =========================================================
+// 2A. ENDPOINT FORGOT PASSWORD
+// =========================================================
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ success: false, message: 'Email wajib diisi!' });
+  }
+
+  try {
+    const [users] = await pool.query('SELECT id_user FROM users WHERE email = ?', [email]);
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: 'Email tidak terdaftar!' });
+    }
+
+    res.json({ success: true, message: 'Email terverifikasi' });
+  } catch (error) {
+    console.error("Error Forgot Password:", error);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// =========================================================
+// 2B. ENDPOINT RESET PASSWORD
+// =========================================================
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: 'Email dan password baru wajib diisi!' });
+  }
+
+  try {
+    const [users] = await pool.query('SELECT id_user FROM users WHERE email = ?', [email]);
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: 'Email tidak terdaftar!' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query('UPDATE users SET password = ? WHERE email = ?', [hashedPassword, email]);
+
+    res.json({ success: true, message: 'Password berhasil diperbarui!' });
+  } catch (error) {
+    console.error("Error Reset Password:", error);
     res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
   }
 });
@@ -493,7 +546,7 @@ app.get('/api/admin/stats', adminOnly, async (req, res) => {
 app.get('/api/admin/users', adminOnly, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT u.id_user, u.email, u.role, p.nama, p.berat_badan, p.tinggi_badan, p.usia, p.jenis_kelamin, p.tingkat_aktivitas
+      SELECT u.id_user, u.email, u.role, p.nama, p.berat_badan, p.tinggi_badan, p.usia, p.jenis_kelamin, p.tingkat_aktivitas, p.foto_profil
       FROM users u
       LEFT JOIN end_user_profiles p ON u.id_user = p.id_user
       WHERE u.role = 'enduser'
