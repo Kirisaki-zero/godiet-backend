@@ -3,6 +3,9 @@ const mysql = require('mysql2/promise');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'godiet_secret_key_123';
 
 const app = express();
 app.use(cors());
@@ -163,6 +166,29 @@ async function runAlterMigrations() {
 initDB();
 
 // =========================================================
+// MIDDLEWARE: VERIFY JWT TOKEN
+// =========================================================
+function verifyToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) {
+    return res.status(401).json({ success: false, message: 'Akses ditolak: Token tidak ditemukan!' });
+  }
+
+  const token = authHeader.split(' ')[1]; // Format: Bearer <token>
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Akses ditolak: Format token salah!' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ success: false, message: 'Token tidak valid atau sudah kadaluarsa!' });
+    }
+    req.user = decoded; // Menyimpan payload token ke req.user
+    next();
+  });
+}
+
+// =========================================================
 // HEALTH CHECK
 // =========================================================
 app.get('/api/health', (req, res) => {
@@ -233,9 +259,17 @@ app.post('/api/auth/login', async (req, res) => {
 
     const [profiles] = await pool.query('SELECT * FROM end_user_profiles WHERE id_user = ?', [user.id_user]);
 
+    // Generate JWT Token
+    const token = jwt.sign(
+      { id_user: user.id_user, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '30d' } // Token berlaku 30 hari
+    );
+
     res.json({
       success: true,
       message: 'Login berhasil',
+      token,
       user: {
         id_user: user.id_user,
         email: user.email,
@@ -301,7 +335,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // =========================================================
 // 3. GET PROFIL USER
 // =========================================================
-app.get('/api/user/profile/:id_user', async (req, res) => {
+app.get('/api/user/profile/:id_user', verifyToken, async (req, res) => {
   const { id_user } = req.params;
   try {
     const [profiles] = await pool.query('SELECT * FROM end_user_profiles WHERE id_user = ?', [id_user]);
@@ -318,7 +352,7 @@ app.get('/api/user/profile/:id_user', async (req, res) => {
 // =========================================================
 // 4. UPDATE PROFIL USER
 // =========================================================
-app.put('/api/user/profile/:id_user', async (req, res) => {
+app.put('/api/user/profile/:id_user', verifyToken, async (req, res) => {
   const { id_user } = req.params;
   const { nama, berat_badan, tinggi_badan, usia, jenis_kelamin, tingkat_aktivitas, target_kalori_harian, foto_profil, tujuan } = req.body;
 
@@ -348,7 +382,7 @@ app.put('/api/user/profile/:id_user', async (req, res) => {
 // =========================================================
 // 5. HAPUS AKUN USER
 // =========================================================
-app.delete('/api/user/:id_user', async (req, res) => {
+app.delete('/api/user/:id_user', verifyToken, async (req, res) => {
   const { id_user } = req.params;
 
   try {
@@ -842,7 +876,7 @@ app.put('/api/admin/reports/:id_report/status', adminOnly, async (req, res) => {
 // =========================================================
 // USER: KIRIM LAPORAN BARU
 // =========================================================
-app.post('/api/user/reports', async (req, res) => {
+app.post('/api/user/reports', verifyToken, async (req, res) => {
   const { id_user, judul, isi_laporan, kategori } = req.body;
 
   if (!id_user || !judul || !isi_laporan) {
@@ -870,7 +904,7 @@ app.post('/api/user/reports', async (req, res) => {
 // =========================================================
 // USER: SYNC RIWAYAT WORKOUT
 // =========================================================
-app.post('/api/user/workout', async (req, res) => {
+app.post('/api/user/workout', verifyToken, async (req, res) => {
   const { id_user, id_workout, tanggal, durasi_detik, kalori_terbakar } = req.body;
 
   if (!id_user || !tanggal) {
@@ -893,7 +927,7 @@ app.post('/api/user/workout', async (req, res) => {
 // =========================================================
 // USER: SIMPAN ASUPAN MAKANAN (MEAL INTAKE)
 // =========================================================
-app.post('/api/meals', async (req, res) => {
+app.post('/api/meals', verifyToken, async (req, res) => {
   const { id_user, nama_makanan, kalori, karbohidrat, protein, lemak, kategori_waktu } = req.body;
 
   if (!id_user || !nama_makanan || !kategori_waktu) {
@@ -929,7 +963,7 @@ app.post('/api/meals', async (req, res) => {
 // =========================================================
 // USER: AMBIL RINGKASAN ASUPAN HARI INI
 // =========================================================
-app.get('/api/meals/today', async (req, res) => {
+app.get('/api/meals/today', verifyToken, async (req, res) => {
   const { id_user } = req.query;
 
   if (!id_user) {
